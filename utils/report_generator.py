@@ -6,9 +6,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.units import inch
 
 class PDFReportGenerator:
-    """
-    Genera un reporte PDF detallado con memoria de cálculo paso a paso.
-    """
     def __init__(self, filename, data, plot_paths=None):
         self.filename = filename
         self.data = data
@@ -16,187 +13,121 @@ class PDFReportGenerator:
         self.styles = getSampleStyleSheet()
         self.elements = []
         
-        # Estilos
-        self.styles.add(ParagraphStyle(name='HeaderCustom', parent=self.styles['Heading2'], spaceAfter=6, textColor=colors.navy))
+        self.styles.add(ParagraphStyle(name='HeaderCustom', parent=self.styles['Heading2'], spaceAfter=6, textColor=colors.navy, borderBottomColor=colors.navy, borderBottomWidth=1, borderPadding=2))
         self.styles.add(ParagraphStyle(name='SubHeader', parent=self.styles['Heading3'], spaceAfter=4, textColor=colors.black, fontSize=11))
-        self.styles.add(ParagraphStyle(name='CalcStep', parent=self.styles['Normal'], fontName='Courier', fontSize=9, leftIndent=20, spaceAfter=2))
-        self.styles.add(ParagraphStyle(name='CalcResult', parent=self.styles['Normal'], fontName='Courier-Bold', fontSize=9, leftIndent=20, spaceAfter=6))
+        self.styles.add(ParagraphStyle(name='CalcStep', parent=self.styles['Normal'], fontName='Courier', fontSize=9, leftIndent=12, spaceAfter=2))
+        self.styles.add(ParagraphStyle(name='CalcResult', parent=self.styles['Normal'], fontName='Helvetica-Bold', fontSize=10, leftIndent=12, spaceAfter=6))
 
     def generate(self):
         doc = SimpleDocTemplate(self.filename, pagesize=LETTER)
-        
-        self.elements.append(Paragraph("Memoria de Cálculo: Diseño Viga Compuesta", self.styles['Title']))
+        self.elements.append(Paragraph("Memoria de Cálculo: Viga Compuesta LRFD (AISC 360-16)", self.styles['Title']))
         self.elements.append(Spacer(1, 0.2 * inch))
 
-        self._add_input_summary()
-        self._add_detailed_calculation_steps()
-        self._add_summary_table()
-        self._add_plots_section()
+        self._add_inputs()
+        self._add_calcs()
+        self._add_shear_calcs() # NUEVA SECCIÓN
+        self._add_deflections()
+        self._add_plots()
         
-        try:
-            doc.build(self.elements)
-            print(f"Reporte generado: {self.filename}")
-        except Exception as e:
-            print(f"Error PDF: {e}")
-            raise e # Re-raise to catch in controller if needed
+        doc.build(self.elements)
 
-    def _add_input_summary(self):
+    def _add_inputs(self):
         self.elements.append(Paragraph("1. Datos de Entrada", self.styles['HeaderCustom']))
-        
-        inputs = self.data['inputs']
-        beam = inputs['beam_properties']
-        
-        # Formatear info de conector
-        c_type = inputs.get('connector_type', 'Stud')
-        c_space = inputs.get('connector_spacing', 12.0)
-        c_info = f"{c_type} @ {c_space} in"
-        
-        # Datos organizados en dos columnas
-        data_left = [
-            ["Luz (L)", f"{inputs['span_ft']} ft"],
-            ["Espaciamiento (S)", f"{inputs['spacing_ft']} ft"],
-            ["Perfil Acero", f"{inputs['beam_name']}"],
-            ["  - Area (As)", f"{beam['A']} in²"],
-            ["  - Inercia (Ix)", f"{beam['Ix']} in⁴"],
-            ["  - Peralte (d)", f"{beam['d']} in"]
-        ]
-        
-        data_right = [
-            ["Concreto (f'c)", f"{inputs['fc_ksi']} ksi"],
-            ["Acero (Fy)", f"{inputs['fy_ksi']} ksi"],
-            ["Losa sobre deck (tc)", f"{inputs['slab_thickness']} in"],
-            ["Metal Deck", f"Hr={inputs['rib_height']}\", Wr={inputs['rib_width']}\""],
-            ["Conectores", c_info],
-            ["Cargas (DL / LL)", f"{inputs['dl_psf']} / {inputs['ll_psf']} psf"]
-        ]
-        
-        # Crear tabla contenedora para el layout de inputs
-        t_left = Table(data_left, colWidths=[1.2*inch, 1.2*inch])
-        t_right = Table(data_right, colWidths=[1.5*inch, 1.2*inch])
-        
-        style_inputs = TableStyle([
-            ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
-            ('FONTSIZE', (0,0), (-1,-1), 9),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey),
-            ('BACKGROUND', (0,0), (0,-1), colors.whitesmoke),
-        ])
-        
-        t_left.setStyle(style_inputs)
-        t_right.setStyle(style_inputs)
-        
-        main_table = Table([[t_left, t_right]], colWidths=[3.5*inch, 3.5*inch])
-        self.elements.append(main_table)
-        self.elements.append(Spacer(1, 0.25 * inch))
-
-    def _add_detailed_calculation_steps(self):
-        """Genera la sección paso a paso con fórmulas"""
-        self.elements.append(Paragraph("2. Memoria de Cálculo Detallada", self.styles['HeaderCustom']))
-        
-        res = self.data['results']
-        steps_load = res['loads']['steps']
-        steps_conn = res['conn_data']['steps']
-        steps_flex = res['strength']['calc_steps']
-        
-        # Bloque Cargas
-        # Usamos KeepTogether para evitar saltos de página a mitad de bloque
-        block_cargas = [
-            Paragraph("2.1 Análisis de Cargas", self.styles['SubHeader']),
-            Paragraph(steps_load['w_u'], self.styles['CalcStep']),
-            Paragraph(steps_load['M_u'], self.styles['CalcResult'])
-        ]
-        self.elements.append(KeepTogether(block_cargas))
-        
-        # Bloque Conectores
-        block_conn = [
-            Paragraph("2.2 Capacidad de Conectores (AISC I8)", self.styles['SubHeader']),
-            Paragraph(f"Fórmula: {steps_conn['Qn_f']}", self.styles['CalcStep']),
-            Paragraph(f"Sustitución: {steps_conn['Qn_s']}", self.styles['CalcStep']),
-            Paragraph(f"Qn Unitario: {res['conn_data']['Qn_unit']:.2f} kips", self.styles['CalcResult']),
-            
-            Paragraph("2.3 Demanda de Cortante Horizontal", self.styles['SubHeader']),
-            Paragraph(f"Concreto (0.85 f'c Ac): {steps_conn['Vh_conc']}", self.styles['CalcStep']),
-            Paragraph(f"Acero (As Fy): {steps_conn['Vh_steel']}", self.styles['CalcStep']),
-            Paragraph(f"Control Vh: {steps_conn['Vh_ctrl']}", self.styles['CalcResult']),
-            Paragraph(f"Suma Qn (Proporcionada): {steps_conn['Sum_Qn']}", self.styles['CalcResult'])
-        ]
-        self.elements.append(KeepTogether(block_conn))
-        
-        # Bloque Flexión
-        block_flex = [
-            Paragraph("2.4 Resistencia a Flexión (Eje Neutro Plástico)", self.styles['SubHeader']),
-            Paragraph(steps_flex['C_force'], self.styles['CalcStep']),
-            Paragraph(f"Bloque 'a': {steps_flex['a']}", self.styles['CalcStep']),
-            Paragraph(steps_flex['Y2'], self.styles['CalcStep']),
-            Paragraph(steps_flex['arm'], self.styles['CalcStep']),
-            Paragraph(steps_flex['Mn'], self.styles['CalcStep']),
-            Paragraph(steps_flex['PhiMn'], self.styles['CalcResult'])
-        ]
-        self.elements.append(KeepTogether(block_flex))
-        
-        self.elements.append(Spacer(1, 0.1 * inch))
-
-    def _add_summary_table(self):
-        # Tabla resumen final (Semaforos)
-        self.elements.append(Paragraph("3. Resumen de Verificaciones", self.styles['HeaderCustom']))
-        
-        # Recuperar datos
-        res = self.data['results']
-        Mu = res['loads']['M_u']
-        PhiMn = res['strength']['phi_Mn']
-        ratio = res['strength']['ratio']
-        status = res['strength']['status']
-        
-        # Recalculo rápido para la tabla del PDF
-        Vu = res['loads']['V_u']
-        # V_n approx
-        inputs = self.data['inputs']
-        d = inputs['beam_properties']['d']
-        tw = inputs['beam_properties']['tw']
-        Fy = inputs['fy_ksi']
-        PhiVn = 1.0 * 0.6 * Fy * d * tw
-        ratio_shear = Vu / PhiVn
-        status_shear = "OK" if ratio_shear <= 1.0 else "FALLA"
-        
-        # Deflexión
-        w_serv = res['w_service']
-        L_in = inputs['span_ft'] * 12
-        I_st = inputs['beam_properties']['Ix']
-        delta = (5 * (w_serv/12) * L_in**4)/(384*29000*I_st)
-        limit = L_in / 360
-        ratio_def = delta/limit
-        status_def = "OK" if ratio_def <= 1.0 else "CHECK"
+        inp = self.data['inputs']
+        beam = inp['beam_properties']
         
         data = [
-            ["Verificación", "Demanda", "Capacidad", "Ratio", "Estado"],
-            ["Flexión", f"{Mu:.1f} k-ft", f"{PhiMn:.1f} k-ft", f"{ratio:.2f}", status],
-            ["Cortante", f"{Vu:.1f} k", f"{PhiVn:.1f} k", f"{ratio_shear:.2f}", status_shear],
-            ["Deflexión", f"{delta:.3f} in", f"{limit:.3f} in", f"{ratio_def:.2f}", status_def],
+            ["Luz", f"{inp['span_ft']} ft", "f'c", f"{inp['fc_ksi']} ksi"],
+            ["Espaciamiento", f"{inp['spacing_ft']} ft", "Fy", f"{inp['fy_ksi']} ksi"],
+            ["Perfil", inp['beam_name'], "Losa (tc)", f"{inp['slab_thickness']} in"],
+            ["Cargas (DL/LL)", f"{inp['dl_psf']} / {inp['ll_psf']} psf", "Deck", f"{inp['rib_height']}\" x {inp['rib_width']}\""],
         ]
-        
-        t = Table(data, colWidths=[1.5*inch, 1.2*inch, 1.2*inch, 0.8*inch, 1.0*inch])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.navy),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('GRID', (0,0), (-1,-1), 1, colors.black),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ]))
-        
-        # Colorear estados
-        for i, row in enumerate(data[1:], 1):
-            st = row[-1]
-            color = colors.green if st == "OK" else (colors.orange if st == "CHECK" else colors.red)
-            t.setStyle(TableStyle([('TEXTCOLOR', (-1,i), (-1,i), color), ('FONTNAME', (-1,i), (-1,i), 'Helvetica-Bold')]))
-
+        t = Table(data, colWidths=[1.2*inch, 1.2*inch, 1.2*inch, 1.2*inch])
+        t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (-1,-1), colors.whitesmoke)]))
         self.elements.append(t)
-        self.elements.append(Spacer(1, 0.2*inch))
+        self.elements.append(Spacer(1, 0.15*inch))
 
-    def _add_plots_section(self):
-        self.elements.append(Paragraph("4. Gráficos", self.styles['HeaderCustom']))
-        if 'moment_plot' in self.plot_paths and os.path.exists(self.plot_paths['moment_plot']):
-            im = Image(self.plot_paths['moment_plot'], width=6.5*inch, height=5*inch)
-            self.elements.append(im)
+    def _add_calcs(self):
+        res = self.data['results']
+        
+        # Ancho Efectivo
+        self.elements.append(Paragraph("2. Geometría (AISC I3.1a)", self.styles['HeaderCustom']))
+        for k, v in res['b_eff_steps'].items():
+            self.elements.append(Paragraph(v, self.styles['CalcStep']))
             
-        if 'section_plot' in self.plot_paths and os.path.exists(self.plot_paths['section_plot']):
-            self.elements.append(Paragraph("Detalle de Sección:", self.styles['SubHeader']))
-            im = Image(self.plot_paths['section_plot'], width=6*inch, height=4*inch)
-            self.elements.append(im)
+        # Conectores
+        self.elements.append(Paragraph("3. Conectores (AISC I8)", self.styles['HeaderCustom']))
+        c_steps = res['conn_data']['steps']
+        self.elements.append(Paragraph(f"Qn: {c_steps['Qn_desc']} = {res['conn_data']['Qn_unit']:.2f} k", self.styles['CalcResult']))
+        self.elements.append(Paragraph(c_steps['N_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(c_steps['Vh_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(f"Acción Compuesta: {res['conn_data']['percent']:.1f}%", self.styles['CalcResult']))
+        
+        # Flexión
+        self.elements.append(Paragraph("4. Capacidad a Flexión (AISC I3.2)", self.styles['HeaderCustom']))
+        f_steps = res['strength']['steps']
+        self.elements.append(Paragraph(f_steps['C_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(f_steps['a_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(f_steps['Y_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(f"Diseño PhiMn: {res['strength']['phi_Mn']:.1f} k-ft (Ratio: {res['strength']['ratio']:.2f})", self.styles['CalcResult']))
+
+    def _add_shear_calcs(self):
+        # NUEVA SECCIÓN DE CORTANTE EN PDF
+        self.elements.append(Paragraph("5. Cortante (AISC G2)", self.styles['HeaderCustom']))
+        shear = self.data['results']['shear']
+        steps = shear['steps']
+        
+        self.elements.append(Paragraph(steps['Aw_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(steps['Formula'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(steps['Vn_calc'], self.styles['CalcStep']))
+        self.elements.append(Paragraph(f"{steps['PhiVn_calc']} (Ratio: {shear['ratio']:.2f})", self.styles['CalcResult']))
+
+    def _create_trans_table(self, d_dict):
+        d = d_dict['table_data']
+        beam_name = self.data['inputs']['beam_name']
+        data = [
+            ["Comp.", "Area", "y", "Ay", "Io", "Ad²"],
+            [beam_name, f"{d['steel']['A']:.2f}", f"{d['steel']['y']:.2f}", f"{d['steel']['Ay']:.1f}", f"{d['steel']['Io']:.1f}", f"{d['steel']['Ad2']:.1f}"],
+            ["Conc", f"{d['conc']['A']:.2f}", f"{d['conc']['y']:.2f}", f"{d['conc']['Ay']:.1f}", f"{d['conc']['Io']:.1f}", f"{d['conc']['Ad2']:.1f}"],
+            ["SUMA", f"{d['sum']['A']:.2f}", "-", f"{d['sum']['Ay']:.1f}", "-", "-"]
+        ]
+        t = Table(data, colWidths=[0.8*inch]*6)
+        t.setStyle(TableStyle([
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.whitesmoke)
+        ]))
+        return t
+
+    def _add_deflections(self):
+        self.elements.append(Paragraph("6. Deflexiones (AISC I3.2)", self.styles['HeaderCustom']))
+        res = self.data['results']
+        defs = res['deflections']
+        Ec = res['conn_data']['Ec']
+        n_base = defs['short']['data']['n_base']
+        fc_psi = self.data['inputs']['fc_ksi'] * 1000
+        
+        self.elements.append(Paragraph(f"Ec = 57000 * sqrt({fc_psi:.0f}) / 1000 = {Ec:.1f} ksi", self.styles['CalcStep']))
+        self.elements.append(Paragraph(f"n = Es / Ec = 29000 / {Ec:.1f} = {n_base:.2f}", self.styles['CalcStep']))
+        self.elements.append(Spacer(1, 0.1*inch))
+        
+        # Corto Plazo
+        self.elements.append(Paragraph(f"A. Corto Plazo (n={defs['short']['data']['n']:.2f})", self.styles['SubHeader']))
+        b_tr = defs['short']['data']['b_tr']
+        self.elements.append(Paragraph(f"Ancho Equiv. (btr) = beff / n = {b_tr:.2f} in", self.styles['CalcStep']))
+        self.elements.append(self._create_trans_table(defs['short']['data']))
+        self.elements.append(Paragraph(f"Ieff = {defs['short']['data']['I_eff']:.1f} in⁴ -> Def = {defs['short']['delta']:.3f} in", self.styles['CalcResult']))
+        self.elements.append(Spacer(1, 0.1*inch))
+        
+        # Largo Plazo
+        self.elements.append(Paragraph(f"B. Largo Plazo (n={defs['long']['data']['n']:.2f})", self.styles['SubHeader']))
+        b_tr_long = defs['long']['data']['b_tr']
+        self.elements.append(Paragraph(f"Ancho Equiv. (btr) = beff / n = {b_tr_long:.2f} in", self.styles['CalcStep']))
+        self.elements.append(self._create_trans_table(defs['long']['data']))
+        self.elements.append(Paragraph(f"Ieff = {defs['long']['data']['I_eff']:.1f} in⁴ -> Def = {defs['long']['delta']:.3f} in", self.styles['CalcResult']))
+
+    def _add_plots(self):
+        self.elements.append(Paragraph("7. Gráficos", self.styles['HeaderCustom']))
+        if 'moment_plot' in self.plot_paths and os.path.exists(self.plot_paths['moment_plot']):
+            self.elements.append(Image(self.plot_paths['moment_plot'], width=6*inch, height=4.5*inch))

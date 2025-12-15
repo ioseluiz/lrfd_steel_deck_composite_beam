@@ -19,7 +19,6 @@ class AppController:
         
         self.last_results = None
         self.last_inputs = None
-        
         self.update_connector_ui(self.view.connector_type_combo.currentText())
 
     def update_connector_ui(self, type_text):
@@ -68,110 +67,140 @@ class AppController:
                 props['length'] = float(self.view.channel_len_input.text())
             inputs['connector_props'] = props
             
+            # --- MODELO ---
             model = CompositeBeamDesign(inputs)
             loads = model.calculate_loads()
+            b_eff, b_eff_steps = model.get_effective_width()
             conn_data = model.calculate_connectors()
-            strength = model.check_composite_strength(loads['M_u'])
+            strength = model.check_composite_strength(loads['M_u'], conn_data)
             
-            s = inputs['spacing_ft']
-            w_service = s * (inputs['dl_psf'] + inputs['ll_psf']) / 1000.0
+            # NUEVO: Cálculo detallado de cortante
+            shear = model.check_shear_strength(loads['V_u'])
             
-            d = beam_props['d']
-            tw = beam_props['tw']
-            Phi_Vn = 1.0 * 0.6 * inputs['fy_ksi'] * d * tw
-            ratio_shear = loads['V_u'] / Phi_Vn
-            status_shear = "OK" if ratio_shear <= 1.0 else "FALLA"
+            deflections = model.calculate_deflections(conn_data, loads)
             
-            L_in = inputs['span_ft'] * 12.0
-            I_steel = beam_props['Ix']
-            delta = (5 * (w_service/12.0) * (L_in**4)) / (384 * 29000 * I_steel)
-            limit_L360 = L_in / 360.0
-            ratio_def = delta / limit_L360
-            status_def = "OK" if ratio_def <= 1.0 else "CHECK"
+            pna_bottom = (beam_props['d'] + inputs['rib_height'] + inputs['slab_thickness']) - strength['a']
             
             self.last_inputs = inputs
             self.last_results = {
                 "loads": loads,
+                "b_eff_steps": b_eff_steps,
                 "strength": strength,
                 "conn_data": conn_data,
-                "w_service": w_service
+                "deflections": deflections,
+                "w_service": loads['w_service'],
+                "shear": shear # Estructura completa ahora
             }
             
-            self.generate_html_report(inputs, loads, strength, conn_data, Phi_Vn, ratio_shear, status_shear, delta, limit_L360, ratio_def, status_def)
+            self.generate_html_report(self.last_results, inputs)
             
-            # --- ACTUALIZAR GRÁFICOS ---
-            # 1. Figuras Steel Tips (NUEVO)
             self.view.steeltips_widget.plot_figures(inputs, self.last_results)
-            
-            # 2. Diagramas V/M/D
-            self.view.diagram_widget.plot_diagrams(inputs['span_ft'], loads['w_u'], w_service, beam_props['Ix'])
-            
-            # 3. Sección Transversal Simple
-            d_steel = beam_props['d']
-            hr = inputs['rib_height']
-            tc = inputs['slab_thickness']
-            pna_bottom = (d_steel + hr + tc) - strength['a']
+            self.view.diagram_widget.plot_diagrams(inputs['span_ft'], loads['w_u'], loads['w_service'], beam_props['Ix'])
             self.view.section_widget.draw_section(inputs, pna_bottom)
             
             self.view.export_btn.setEnabled(True)
-            self.view.tabs.setCurrentIndex(1) # Cambiar foco a la pestaña de figuras
+            self.view.tabs.setCurrentIndex(0)
             
         except ValueError:
             self.view.report_label.setText("<b style='color:red'>Error: Datos numéricos inválidos.</b>")
+        except Exception as e:
+            self.view.report_label.setText(f"<b style='color:red'>Error Crítico: {str(e)}</b>")
 
-    # (El método generate_html_report y export_to_pdf se mantienen igual que en versiones anteriores, no es necesario repetirlos aquí si no cambiaron lógica interna)
-    def generate_html_report(self, inputs, loads, strength, conn_data, Phi_Vn, ratio_shear, status_shear, delta, limit, ratio_def, status_def):
-        # ... (Lógica de reporte HTML igual al snippet anterior)
-        # Por brevedad en la respuesta, asumo que este método existe tal cual lo definimos en el paso anterior.
-        # Si necesitas el código completo, por favor indícamelo.
+    def generate_html_report(self, res, inputs):
+        l_steps = res['loads']['steps']
+        c_steps = res['conn_data']['steps']
+        f_steps = res['strength']['steps']
+        s_steps = res['shear']['steps'] # Steps de cortante
+        b_steps = res['b_eff_steps']
         
-        # REPETICIÓN DEL MÉTODO PARA INTEGRIDAD DEL BLOQUE DE CÓDIGO
-        steps_flex = strength['calc_steps']
-        steps_conn = conn_data['steps']
-        steps_load = loads['steps']
-        status_flex = strength['status']
-        c_status = "FULL" if conn_data['is_full_composite'] else "PARCIAL"
-        orient = inputs['deck_orientation']
-        a_full = strength.get('a_full', 0)
-        phiMn_full = strength.get('phi_Mn_full', 0)
+        conn = res['conn_data']
+        st = res['strength']
+        defs = res['deflections']
+        shear = res['shear']
+        beam_name = inputs['beam_name']
+        b_eff = st['b_eff']
         
-        html = f"""
+        Ec = conn['Ec']
+        n_base = defs['short']['data']['n_base']
+        fc_psi = inputs['fc_ksi'] * 1000
+        
+        css = """
         <style>
-            h3 {{ color: #003366; margin-bottom: 5px; }}
-            h4 {{ background-color: #eee; padding: 5px; border-left: 4px solid #003366; margin-top: 15px; }}
-            .step {{ font-family: Consolas, monospace; font-size: 10pt; color: #333; margin-left: 15px; margin-bottom: 3px; }}
-            .res {{ font-weight: bold; color: #000; }}
-            .ok {{ color: green; font-weight: bold; }}
-            .fail {{ color: red; font-weight: bold; }}
-            .info {{ color: blue; font-style: italic; font-size: 9pt; }}
-            hr {{ border: 0; border-top: 1px solid #ccc; }}
+            h3 { color: #004488; border-bottom: 2px solid #004488; margin-bottom: 5px; }
+            h4 { background-color: #f2f2f2; padding: 5px; border-left: 5px solid #004488; margin-top: 10px; font-weight: bold;}
+            .step { font-family: monospace; font-size: 10pt; margin-left: 10px; color: #333; }
+            .result { font-weight: bold; margin-left: 10px; margin-bottom: 3px; color: #000; }
+            table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 5px; }
+            th { background-color: #004488; color: white; padding: 4px; text-align: center; }
+            td { border: 1px solid #ddd; padding: 3px; text-align: center; }
+            .pass { color: green; font-weight: bold; }
+            .fail { color: red; font-weight: bold; }
         </style>
-        <h3>Memoria de Cálculo Detallada (AISC 360-16)</h3>
-        <h4>1. Datos Generales</h4>
-        <div class="step">Orientación Ribs: <b>{orient}</b></div>
-        <div class="step">Concreto en Ribs: {"INCLUIDO" if orient == 'Parallel' else "DESPRECIADO"}</div>
-        <h4>2. Análisis de Cargas</h4>
-        <div class="step">{steps_load['w_u']}</div>
-        <div class="step">{steps_load['M_u']}</div>
-        <h4>3. Capacidad de Conectores (Sec. I8)</h4>
-        <div class="step">Formula Qn: {steps_conn['Qn_f']}</div>
-        <div class="step">Sustitución: {steps_conn['Qn_s']}</div>
-        <div class="step res">Capacidad Unitaria Qn = {conn_data['Qn_unit']:.2f} kips</div>
-        <div class="step">Conectores (L/2): N = {conn_data['N_half']} und</div>
-        <div class="step res">Suma Qn = {steps_conn['Sum_Qn']}</div>
-        <h4>4. Demanda de Cortante Horizontal (Vh)</h4>
-        <div class="step">Concreto (0.85f'cAc): {steps_conn['Vh_conc']}</div>
-        <div class="step">Acero (AsFy): {steps_conn['Vh_steel']}</div>
-        <div class="step res">Control Vh = {steps_conn['Vh_ctrl']}</div>
-        <div class="step">Acción Compuesta: <b>{c_status}</b> ({strength['percent_composite']:.1f}%)</div>
-        <h4>5. Resistencia a Flexión</h4>
-        <div class="step">Bloque Compresión a = {strength['a']:.2f} in</div>
-        <div class="step res">Diseño Phi*Mn: {steps_flex['PhiMn']}</div>
-        <div class="info">Full Composite (Ref): a={a_full:.2f} in | PhiMn={phiMn_full:.1f} k-ft</div>
-        <h4>6. Verificación Final</h4>
-        <div class="step">Ratio Flexión: <b>{strength['ratio']:.2f}</b> <span class="{'ok' if strength['status']=='OK' else 'fail'}">[{strength['status']}]</span></div>
-        <div class="step">Ratio Cortante: <b>{ratio_shear:.2f}</b> <span class="{'ok' if status_shear=='OK' else 'fail'}">[{status_shear}]</span></div>
-        <div class="step">Ratio Deflexión: <b>{ratio_def:.2f}</b> <span class="{'ok' if status_def=='OK' else 'fail'}">[{status_def}]</span></div>
+        """
+        
+        def mk_tbl(d): 
+            dd = d['table_data']
+            return f"""
+            <table>
+            <tr><th>Item</th><th>A (in²)</th><th>y (in)</th><th>Ay (in³)</th><th>Io (in⁴)</th><th>Ad² (in⁴)</th></tr>
+            <tr><td><b>{beam_name}</b></td><td>{dd['steel']['A']:.2f}</td><td>{dd['steel']['y']:.2f}</td><td>{dd['steel']['Ay']:.1f}</td><td>{dd['steel']['Io']:.1f}</td><td>{dd['steel']['Ad2']:.1f}</td></tr>
+            <tr><td>Conc(Tr)</td><td>{dd['conc']['A']:.2f}</td><td>{dd['conc']['y']:.2f}</td><td>{dd['conc']['Ay']:.1f}</td><td>{dd['conc']['Io']:.1f}</td><td>{dd['conc']['Ad2']:.1f}</td></tr>
+            <tr style='background-color:#eee'><td><b>SUMA</b></td><td><b>{dd['sum']['A']:.2f}</b></td><td>-</td><td><b>{dd['sum']['Ay']:.1f}</b></td><td>-</td><td>-</td></tr>
+            </table>
+            """
+
+        html = f"""{css}
+        <h3>MEMORIA DE CÁLCULO</h3>
+        
+        <h4>1. ANCHO EFECTIVO (AISC I3.1a)</h4>
+        <div class="step">L/4: {b_steps['L_4']}</div>
+        <div class="step">Spacing: {b_steps['spacing']}</div>
+        <div class="result">{b_steps['final']}</div>
+        
+        <h4>2. CARGAS</h4>
+        <div class="step">{l_steps['w_u']}</div>
+        <div class="result">{l_steps['M_u']}</div>
+        
+        <h4>3. CONECTORES (AISC I8)</h4>
+        <div class="step">Qn: {c_steps['Qn_desc']} = <b>{conn['Qn_unit']:.2f} k</b></div>
+        <div class="step">Cant: {c_steps['N_calc']}</div>
+        <div class="result">Vh Req: {c_steps['Vh_calc']} -> {conn['percent']:.1f}% Compuesta</div>
+        
+        <h4>4. FLEXIÓN (AISC I3.2)</h4>
+        <div class="step">{f_steps['C_calc']}</div>
+        <div class="step">{f_steps['a_calc']}</div>
+        <div class="step">{f_steps['Y_calc']}</div>
+        <div class="result">PhiMn = {st['phi_Mn']:.1f} k-ft (Ratio: {st['ratio']:.2f})</div>
+        
+        <h4>5. CORTANTE (AISC G2)</h4>
+        <div class="step">{s_steps['Aw_calc']}</div>
+        <div class="step">{s_steps['Formula']}</div>
+        <div class="step">{s_steps['Vn_calc']}</div>
+        <div class="result">{s_steps['PhiVn_calc']} (Ratio: {shear['ratio']:.2f})</div>
+        
+        <h4>6. DEFLEXIONES (AISC I3.2 / C-I3-1)</h4>
+        
+        <div class="step"><b>Propiedades:</b></div>
+        <div class="step">Ec = 57000 * sqrt({fc_psi:.0f}) / 1000 = <b>{Ec:.1f} ksi</b></div>
+        <div class="step">n = Es / Ec = 29000 / {Ec:.1f} = <b>{n_base:.2f}</b></div>
+        <br>
+        
+        <div class="result">A. Corto Plazo (n={defs['short']['data']['n']:.2f})</div>
+        <div class="step">Ancho Equiv. ($b_{{tr}}$) = {b_eff:.1f} / {defs['short']['data']['n']:.2f} = <b>{defs['short']['data']['b_tr']:.2f} in</b></div>
+        {mk_tbl(defs['short']['data'])}
+        <div class="step">Itr={defs['short']['data']['I_tr']:.1f}, <b>Ieff={defs['short']['data']['I_eff']:.1f} in⁴</b></div>
+        <div class="result">Def = {defs['short']['delta']:.3f}" (Lim {defs['short']['limit']:.3f}")</div>
+        
+        <div class="result" style="margin-top:10px;">B. Largo Plazo (n={defs['long']['data']['n']:.2f})</div>
+        <div class="step">Ancho Equiv. ($b_{{tr}}$) = {b_eff:.1f} / {defs['long']['data']['n']:.2f} = <b>{defs['long']['data']['b_tr']:.2f} in</b></div>
+        {mk_tbl(defs['long']['data'])}
+        <div class="step">Itr={defs['long']['data']['I_tr']:.1f}, <b>Ieff={defs['long']['data']['I_eff']:.1f} in⁴</b></div>
+        <div class="result">Def = {defs['long']['delta']:.3f}" (Lim {defs['long']['limit']:.3f}")</div>
+        
+        <h4>7. RESUMEN</h4>
+        <div>Flexión: {st['ratio']:.2f} [{st['status']}]</div>
+        <div>Cortante: {shear['ratio']:.2f} [{'OK' if shear['ratio']<=1 else 'FAIL'}]</div>
+        <div>Deflexión: {max(defs['short']['ratio'], defs['long']['ratio']):.2f} [{'OK' if defs['short']['ratio']<=1 else 'CHECK'}]</div>
         """
         self.view.report_label.setText(html)
 
@@ -182,12 +211,8 @@ class AppController:
             try:
                 temp_moment = "temp_diagrams.png"
                 temp_section = "temp_section.png"
-                self.view.diagram_widget.figure.savefig(temp_moment, dpi=150, bbox_inches='tight')
-                self.view.section_widget.figure.savefig(temp_section, dpi=150, bbox_inches='tight')
-                
-                # Opcional: También guardar las figuras Steel Tips si quieres incluirlas en el PDF
-                # temp_steeltips = "temp_steeltips.png"
-                # self.view.steeltips_widget.figure.savefig(temp_steeltips, dpi=150, bbox_inches='tight')
+                self.view.diagram_widget.figure.savefig(temp_moment, dpi=300, bbox_inches='tight')
+                self.view.section_widget.figure.savefig(temp_section, dpi=300, bbox_inches='tight')
                 
                 pdf = PDFReportGenerator(filename, {
                     'inputs': self.last_inputs,
